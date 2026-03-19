@@ -3,23 +3,48 @@ FastAPI web server.
 
 Serves webhook endpoints for WhatsApp (both Meta Cloud API and whatsapp-web.js)
 and starts the APScheduler on startup.
+
+Includes HMAC-SHA256 webhook signature verification for security.
 """
 
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import hmac
 from contextlib import asynccontextmanager
 from typing import Any
 
 from fastapi import FastAPI, Request, Response
 
-from config.settings import META_VERIFY_TOKEN, WHATSAPP_MODE
+from config.settings import META_VERIFY_TOKEN, META_APP_SECRET, WHATSAPP_MODE
 from phase2_whatsapp.bot import handle_incoming_message
 from phase2_whatsapp.meta_cloud_api import parse_webhook_message
 from server.scheduler import start_scheduler, shutdown_scheduler
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+
+# ── Webhook signature verification ──────────────────────────────
+def _verify_signature(payload: bytes, signature: str, secret: str) -> bool:
+    """
+    Verify the X-Hub-Signature-256 header from Meta's webhook.
+
+    Args:
+        payload: Raw request body bytes.
+        signature: Value of X-Hub-Signature-256 header.
+        secret: META_APP_SECRET from environment.
+
+    Returns:
+        True if signature is valid.
+    """
+    if not secret or not signature:
+        return False
+    expected = hmac.new(
+        secret.encode("utf-8"), payload, hashlib.sha256
+    ).hexdigest()
+    return hmac.compare_digest(f"sha256={expected}", signature)
 
 
 # ── Lifespan (startup / shutdown) ────────────────────────────────
@@ -42,12 +67,21 @@ app = FastAPI(
 
 
 # ══════════════════════════════════════════════════════════════════
-#  HEALTH CHECK
+#  HEALTH CHECK (enhanced with quota reporting)
 # ══════════════════════════════════════════════════════════════════
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "whatsapp_mode": WHATSAPP_MODE}
+    """Return system health with quota usage stats."""
+    from utils.gemini_client import get_quota_status
+
+    gemini_quota = get_quota_status()
+
+    return {
+        "status": "ok",
+        "whatsapp_mode": WHATSAPP_MODE,
+        "gemini_quota": gemini_quota,
+    }
 
 
 # ══════════════════════════════════════════════════════════════════
@@ -73,7 +107,18 @@ async def verify_webhook(request: Request):
 @app.post("/webhook/whatsapp")
 async def meta_webhook(request: Request):
     """Receive incoming messages from Meta WhatsApp Cloud API."""
-    body = await request.json()
+    # Read raw body for signature verification
+    raw_body = await request.body()
+
+    # Verify HMAC-SHA256 signature if META_APP_SECRET is configured
+    if META_APP_SECRET:
+        signature = request.headers.get("X-Hub-Signature-256", "")
+        if not _verify_signature(raw_body, signature, META_APP_SECRET):
+            logger.warning("Meta webhook: invalid signature — rejecting payload.")
+            return Response(content="Invalid signature", status_code=403)
+
+    import json
+    body = json.loads(raw_body)
     parsed = parse_webhook_message(body)
 
     if parsed and parsed.get("message"):

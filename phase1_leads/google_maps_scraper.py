@@ -151,6 +151,10 @@ async def _scrape_async(city: str, business_type: str) -> list[dict[str, Any]]:
     logger.info("Scraping Google Maps for: %s", query)
 
     leads: list[dict[str, Any]] = []
+    import re
+    import urllib.parse
+
+    _BROWSER_TIMEOUT_MS = 300_000  # 5-minute max for entire browser session
 
     async with async_playwright() as pw:
         browser = await pw.chromium.launch(headless=True, args=["--disable-blink-features=AutomationControlled"])
@@ -159,11 +163,11 @@ async def _scrape_async(city: str, business_type: str) -> list[dict[str, Any]]:
             viewport={"width": 1280, "height": 800},
             locale="en-IN",
         )
+        context.set_default_timeout(_BROWSER_TIMEOUT_MS)
         page = await context.new_page()
 
         try:
             # Navigate directly to search URL — bypasses search box and popups
-            import urllib.parse
             search_url = f"https://www.google.com/maps/search/{urllib.parse.quote(query)}"
             await page.goto(search_url, timeout=60_000)
             await _random_delay(3, 5)
@@ -182,7 +186,6 @@ async def _scrape_async(city: str, business_type: str) -> list[dict[str, Any]]:
                 await page.wait_for_selector('[class*="Nv2PK"]', timeout=15_000)
             except PwTimeout:
                 logger.warning("No results found for '%s'.", query)
-                await browser.close()
                 return []
 
             # Scroll to load more results
@@ -191,8 +194,6 @@ async def _scrape_async(city: str, business_type: str) -> list[dict[str, Any]]:
 
             # Extract data
             all_listings = await _extract_listings(page)
-
-            import re
 
             # Filter: keep only leads WITHOUT a website AND WITH a phone number
             for listing in all_listings:
@@ -240,6 +241,16 @@ async def _scrape_async(city: str, business_type: str) -> list[dict[str, Any]]:
     return leads
 
 
+def _run_in_new_loop(city: str, business_type: str) -> list[dict[str, Any]]:
+    """Run the async scraper in a fresh event loop (for use in a new thread)."""
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        return loop.run_until_complete(_scrape_async(city, business_type))
+    finally:
+        loop.close()
+
+
 def scrape(city: str, business_type: str) -> list[dict[str, Any]]:
     """
     Scrape Google Maps for businesses without websites.
@@ -260,8 +271,11 @@ def scrape(city: str, business_type: str) -> list[dict[str, Any]]:
         loop = None
 
     if loop and loop.is_running():
+        # Cannot call asyncio.run() when a loop is already running.
+        # Spawn a new thread with its own event loop instead.
         import concurrent.futures
         with concurrent.futures.ThreadPoolExecutor() as pool:
-            return pool.submit(asyncio.run, _scrape_async(city, business_type)).result()
+            future = pool.submit(_run_in_new_loop, city, business_type)
+            return future.result()
     else:
         return asyncio.run(_scrape_async(city, business_type))

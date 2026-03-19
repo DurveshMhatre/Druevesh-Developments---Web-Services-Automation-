@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import re
 from datetime import datetime, timezone
+import time
 from typing import Any
 
 import gspread
@@ -27,6 +28,11 @@ logger = get_logger(__name__)
 # ── Connection cache (created once per process) ─────────────────
 _gspread_client: gspread.Client | None = None
 _spreadsheet: gspread.Spreadsheet | None = None
+
+# ── In-memory cache for leads (reduces Sheets API calls) ─────────
+_leads_cache: list[dict[str, Any]] = []
+_leads_cache_time: float = 0.0
+_CACHE_TTL = 300  # 5 minutes
 
 
 def _get_client() -> gspread.Client:
@@ -111,21 +117,35 @@ def _now_iso() -> str:
 #  PUBLIC API — Leads
 # ══════════════════════════════════════════════════════════════════
 
-def get_all_leads() -> list[dict[str, Any]]:
-    """Return every row from the *Leads* worksheet as a list of dicts."""
+def get_all_leads(force_refresh: bool = False) -> list[dict[str, Any]]:
+    """Return every row from the *Leads* worksheet as a list of dicts.
+
+    Uses an in-memory cache with 5-minute TTL to reduce API calls.
+    """
+    global _leads_cache, _leads_cache_time
+
+    now = time.time()
+    if not force_refresh and _leads_cache and (now - _leads_cache_time) < _CACHE_TTL:
+        logger.debug("Returning %d cached leads (%.0f s old).", len(_leads_cache), now - _leads_cache_time)
+        return _leads_cache
+
     ss = _get_spreadsheet()
     ws = _ensure_worksheet(ss, "Leads", LEAD_HEADERS)
     records = ws.get_all_records()
-    logger.debug("Fetched %d leads from Sheets.", len(records))
+    _leads_cache = records
+    _leads_cache_time = now
+    logger.debug("Fetched %d leads from Sheets (cache refreshed).", len(records))
     return records
 
 
 def append_leads(leads: list[dict[str, Any]]) -> int:
-    """Append new lead rows and return the count of rows added."""
+    """Append new lead rows and return the count of rows added.
+
+    Falls back to local storage if Sheets API fails.
+    """
+    global _leads_cache_time
     if not leads:
         return 0
-    ss = _get_spreadsheet()
-    ws = _ensure_worksheet(ss, "Leads", LEAD_HEADERS)
 
     rows = []
     for lead in leads:
@@ -146,9 +166,17 @@ def append_leads(leads: list[dict[str, Any]]) -> int:
             lead.get("last_message_at", ""),
         ])
 
-    ws.append_rows(rows, value_input_option="USER_ENTERED")
-    logger.info("Appended %d new leads to Sheets.", len(rows))
-    return len(rows)
+    try:
+        ss = _get_spreadsheet()
+        ws = _ensure_worksheet(ss, "Leads", LEAD_HEADERS)
+        ws.append_rows(rows, value_input_option="USER_ENTERED")
+        _leads_cache_time = 0  # Invalidate cache
+        logger.info("Appended %d new leads to Sheets.", len(rows))
+        return len(rows)
+    except Exception as exc:
+        logger.error("Failed to append leads to Sheets: %s — falling back to local storage.", exc)
+        from utils.local_storage import store_leads
+        return store_leads(leads)
 
 
 def _find_lead_row(ws, phone: str) -> int | None:

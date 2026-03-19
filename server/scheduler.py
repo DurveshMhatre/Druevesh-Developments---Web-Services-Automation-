@@ -28,6 +28,7 @@ def _run_daily_scrape():
 
     from phase1_leads.google_maps_scraper import scrape as scrape_gmaps
     from phase1_leads.lead_scorer import score_lead_dict
+    from phase1_leads.dedup import deduplicate
     from utils.sheets_client import append_leads, get_all_leads
 
     all_new_leads = []
@@ -41,23 +42,13 @@ def _run_daily_scrape():
             except Exception as exc:
                 logger.error("Google Maps scraper error (%s/%s): %s", city, btype, exc)
 
-            except Exception as exc:
-                logger.error("Google Maps scraper error (%s/%s): %s", city, btype, exc)
-
     # Score all leads
     for lead in all_new_leads:
         score_lead_dict(lead)
 
-    # Dedup against existing data (simple phone check since dedup.py is missing)
+    # Dedup against existing data using fuzzy matching module
     existing = get_all_leads()
-    existing_phones = {str(row.get("Phone", "")).strip() for row in existing if row.get("Phone")}
-    
-    unique = []
-    for lead in all_new_leads:
-        phone = str(lead.get("phone", "")).strip()
-        if phone and phone not in existing_phones:
-            unique.append(lead)
-            existing_phones.add(phone)
+    unique = deduplicate(all_new_leads, existing)
 
     # Save to Sheets
     saved = append_leads(unique)

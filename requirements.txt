@@ -12,4 +12,6 @@ uvicorn==0.34.0
 apscheduler==3.10.4
 httpx==0.28.1
 python-telegram-bot==21.9
+rapidfuzz>=3.0.0
 pytest==8.3.4
+pytest-asyncio>=0.24.0
