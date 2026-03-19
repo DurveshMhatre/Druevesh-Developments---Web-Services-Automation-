@@ -1,0 +1,48 @@
+# ── Git Ignore ────────────────────────────────────────────────────
+
+# Environment & secrets
+.env
+config/credentials/*.json
+config/credentials/token.json
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environment
+venv/
+.venv/
+env/
+
+# Logs
+logs/
+*.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Node (whatsapp-web.js)
+node_modules/
+phase2_whatsapp/whatsapp_web_js/node_modules/
+phase2_whatsapp/whatsapp_web_js/.wwebjs_auth/
+phase2_whatsapp/whatsapp_web_js/.wwebjs_cache/
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Playwright
+/test-results/
+/playwright-report/
+/blob-report/
+/playwright/.cache/
+/playwright/.auth/

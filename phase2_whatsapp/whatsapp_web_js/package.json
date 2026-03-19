@@ -1,0 +1,15 @@
+{
+  "name": "whatsapp-web-js-server",
+  "version": "1.0.0",
+  "description": "Node.js server wrapping whatsapp-web.js for the AI automation bot",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "whatsapp-web.js": "^1.26.0",
+    "qrcode-terminal": "^0.12.0",
+    "express": "^4.21.0",
+    "body-parser": "^1.20.3"
+  }
+}

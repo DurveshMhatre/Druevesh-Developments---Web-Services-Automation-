@@ -1,0 +1,18 @@
+{
+  "name": "ai-web-automation",
+  "version": "1.0.0",
+  "description": "Automated pipeline that scrapes businesses without websites, scores them, and cold-outreaches via WhatsApp with an AI-powered conversation bot.",
+  "main": "index.js",
+  "directories": {
+    "test": "tests"
+  },
+  "scripts": {},
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "devDependencies": {
+    "@playwright/test": "^1.58.2",
+    "@types/node": "^25.5.0"
+  }
+}
