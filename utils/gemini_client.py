@@ -18,7 +18,7 @@ from typing import Any
 from google import genai
 from google.genai import types
 
-from config.settings import GEMINI_API_KEY
+from config.settings import GEMINI_API_KEY, TIMEZONE
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -39,24 +39,29 @@ _DAILY_LIMIT = 1450  # safety margin below 1,500
 _daily_count = 0
 _daily_reset_date: str = ""  # ISO date string for last reset
 
-# ── IST timezone ────────────────────────────────────────────────
-_IST = timezone(timedelta(hours=5, minutes=30))
+# ── Configured timezone ─────────────────────────────────────────
+try:
+    from zoneinfo import ZoneInfo
+    _TZ = ZoneInfo(TIMEZONE)
+except ImportError:
+    # Python < 3.9 fallback
+    _TZ = timezone(timedelta(hours=5, minutes=30))
 
 # ── Response cache for common queries ────────────────────────────
 _response_cache: dict[str, tuple[str, float]] = {}
 _CACHE_TTL = 3600  # 1 hour
 
 
-def _get_today_ist() -> str:
-    """Return today's date in IST as ISO string."""
-    return datetime.now(_IST).strftime("%Y-%m-%d")
+def _get_today_local() -> str:
+    """Return today's date in the configured timezone as ISO string."""
+    return datetime.now(_TZ).strftime("%Y-%m-%d")
 
 
 def _check_daily_quota() -> bool:
     """Check and enforce daily request quota. Returns True if quota available."""
     global _daily_count, _daily_reset_date
 
-    today = _get_today_ist()
+    today = _get_today_local()
     if _daily_reset_date != today:
         _daily_count = 0
         _daily_reset_date = today
@@ -189,15 +194,18 @@ def generate_json(system_prompt: str, user_message: str) -> dict[str, Any]:
 
 
 def get_quota_status() -> dict[str, Any]:
-    """Return current quota usage stats for monitoring."""
+    """Return current quota usage stats for monitoring (thread-safe)."""
     with _rate_limit_lock:
         now = time.time()
         recent_rpm = sum(1 for ts in _request_timestamps if ts > now - 60)
+        daily = _daily_count
+        remaining = max(0, _DAILY_LIMIT - daily)
+        reset = _daily_reset_date
     return {
-        "daily_used": _daily_count,
+        "daily_used": daily,
         "daily_limit": _DAILY_LIMIT,
-        "daily_remaining": max(0, _DAILY_LIMIT - _daily_count),
+        "daily_remaining": remaining,
         "rpm_current": recent_rpm,
         "rpm_limit": _RPM_LIMIT,
-        "reset_date": _daily_reset_date,
+        "reset_date": reset,
     }

@@ -9,9 +9,25 @@ Automated pipeline that scrapes businesses without websites, scores them, and co
 - 📊 **Google Sheets** — Auto-managed lead database with caching
 - 🔄 **Circuit Breaker** — Auto-recovery from API failures
 - 📬 **Message Queue** — Priority-based sending with rate limiting
-- 🛡️ **Webhook Security** — HMAC-SHA256 signature verification
+- 🛡️ **Webhook Security** — HMAC-SHA256 signature verification (dual-format)
 - 💾 **Local Fallback** — Zero data loss when Sheets quota is exhausted
-- 📈 **Quota Monitoring** — `/health` endpoint with real-time usage stats
+- 📈 **Quota Monitoring** — `/health` and `/health/detailed` endpoints
+- ✅ **Config Validation** — Startup checks for all required env vars
+
+## Pipeline Flowchart
+
+```mermaid
+graph LR
+    A["🔍 Scraper<br>(Google Maps)"] --> B["📊 Scorer<br>(lead_scorer)"]
+    B --> C["🔁 Dedup<br>(fuzzy match)"]
+    C --> D["📋 Google Sheets<br>(lead database)"]
+    D --> E["📤 Outreach<br>(cold messages)"]
+    E --> F["🤖 AI Bot<br>(Gemini 2.5 Flash)"]
+    F --> G{Interested?}
+    G -->|Yes| H["📅 Handoff<br>(schedule call)"]
+    G -->|No| I["📉 Close lead"]
+    G -->|Maybe| J["📨 Follow-ups<br>(2x auto)"]
+```
 
 ## Quick Start
 
@@ -67,9 +83,9 @@ python -m server.app
 
 This starts:
 - FastAPI server on `http://localhost:8000`
-- Daily scraper (6 AM)
-- Outreach scheduler (every 2 hrs, 9 AM – 8 PM)
-- Daily Telegram summary (9 PM)
+- Daily scraper (6 AM IST)
+- Outreach scheduler (every 2 hrs, 9 AM – 8 PM IST)
+- Daily Telegram summary (9 PM IST)
 
 ### 6. Manual test scrape
 
@@ -80,7 +96,15 @@ python -c "from phase1_leads.google_maps_scraper import scrape; print(scrape('De
 ## Run Tests
 
 ```bash
-python -m pytest tests/ -v
+# Run all unit tests (no external services needed)
+python -m pytest tests/ -v --ignore=tests/test_sheets_client.py
+
+# Run specific test suites
+python -m pytest tests/test_phone_utils.py -v         # 21 phone tests
+python -m pytest tests/test_webhook_security.py -v    # webhook HMAC tests
+python -m pytest tests/test_gemini_rate_limit.py -v   # rate limit + threading
+python -m pytest tests/test_lead_dedup.py -v          # dedup + fuzzy matching
+python -m pytest tests/test_whatsapp_bridge.py -v     # bridge retry logic
 ```
 
 ## Project Structure
@@ -91,14 +115,28 @@ ai-web-automation/
 ├── phase1_leads/        # Google Maps + JustDial scrapers, scorer, dedup
 ├── phase2_whatsapp/     # WhatsApp bot, conversation engine, templates
 │   └── whatsapp_web_js/ # Node.js bridge for whatsapp-web.js (Option B)
-├── utils/               # Sheets client, Gemini client, Telegram alerts
+├── utils/               # Shared utilities
+│   ├── phone_utils.py       # Centralized phone validation/normalization
+│   ├── config_validator.py  # Startup env var checks
+│   ├── gemini_client.py     # Gemini 2.5 Flash with rate limiting
+│   ├── sheets_client.py     # Google Sheets with retry decorator
 │   ├── circuit_breaker.py   # Auto-recovery from API failures
 │   ├── message_queue.py     # Priority queue for WhatsApp sends
-│   └── local_storage.py     # Fallback when Sheets quota exhausted
+│   ├── local_storage.py     # Fallback when Sheets quota exhausted
+│   └── telegram_alert.py    # Admin alerts via Telegram
 ├── server/              # FastAPI server + APScheduler
 ├── tests/               # Unit + integration tests
 └── data/                # Local fallback storage (auto-created)
 ```
+
+## API Endpoints
+
+| Endpoint | Method | Description |
+|---|---|---|
+| `/health` | GET | System health + Gemini quota usage |
+| `/health/detailed` | GET | Full status: circuit breakers, local storage, all quotas |
+| `/webhook/whatsapp` | GET/POST | Meta Cloud API webhook (verification + messages) |
+| `/webhook/incoming` | POST | whatsapp-web.js incoming messages |
 
 ## Free-Tier Limits & Troubleshooting
 
@@ -110,21 +148,29 @@ ai-web-automation/
 | **Telegram Bot** | Unlimited | Always available |
 | **Playwright** | N/A (local) | No limits, runs headless Chromium |
 
-### Common Issues
+### Troubleshooting Guide
 
-**"Gemini daily quota exhausted"**
-- The system automatically blocks requests after 1,450 calls/day (safety margin)
-- Check quota: `GET http://localhost:8000/health` → `gemini_quota.daily_remaining`
-- Resets at midnight IST automatically
+#### "Gemini daily quota exhausted"
+- **What it means**: The system automatically blocks requests after 1,450 calls/day (safety margin below 1,500 limit).
+- **How to check**: `GET http://localhost:8000/health` → `gemini_quota.daily_remaining` shows remaining calls.
+- **When it resets**: Midnight in the configured `TIMEZONE` (default: IST / `Asia/Kolkata`).
+- **Workaround**: The Gemini client returns cached responses for repeated queries.
 
-**"Circuit breaker OPEN"**
-- A service failed too many times consecutively
-- The circuit breaker auto-recovers after the cooldown period (60-120s)
-- Check: `GET http://localhost:8000/health`
+#### "Circuit breaker OPEN"
+- **What it means**: A service (Gemini, WhatsApp, or Sheets) failed too many times consecutively (5 for Gemini/Sheets, 3 for WhatsApp).
+- **Auto-recovery**: The circuit breaker enters `HALF_OPEN` state after a cooldown (60-120s) and allows one test request through. If it succeeds, normal operation resumes.
+- **How to check**: `GET http://localhost:8000/health/detailed` → `circuit_breakers.<service>.state`.
 
-**"Failed to append to Sheets — falling back to local storage"**
-- Sheets API quota exhausted; data saved to `data/local_fallback/`
-- Auto-syncs when quota resets; zero data loss
+#### "Sheets fallback active"
+- **What it means**: Google Sheets API quota exhausted; data is saved to `data/local_fallback/` as JSON files.
+- **Data safety**: Zero data loss — all leads and conversations are preserved locally.
+- **Auto-sync**: The system automatically syncs local data back to Sheets when quota resets.
+- **Where data is stored**: `data/local_fallback/pending_leads.json` and `data/local_fallback/pending_conversations.json`.
+
+#### "Webhook signature invalid"
+- **What it means**: The incoming webhook request failed HMAC-SHA256 verification.
+- **Common fixes**: Ensure `META_APP_SECRET` in your `.env` matches the App Secret in your Facebook App Dashboard → Settings → Basic.
+- **Debug**: Check server logs — signature mismatches are logged at DEBUG level with truncated hash values.
 
 ### Switching WhatsApp Modes
 

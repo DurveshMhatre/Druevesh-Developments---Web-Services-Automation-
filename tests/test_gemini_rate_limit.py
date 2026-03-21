@@ -104,3 +104,41 @@ class TestDailyQuota:
         result = gc._check_daily_quota()
         assert result is True
         assert gc._daily_count == 0  # Should have reset
+
+    def test_concurrent_quota_tracking(self):
+        """20 concurrent threads incrementing daily_count should produce accurate count."""
+        import utils.gemini_client as gc
+
+        # Reset state
+        with gc._rate_limit_lock:
+            gc._daily_count = 0
+            gc._daily_reset_date = gc._get_today_local()
+
+        thread_count = 20
+        errors = []
+
+        def increment_quota():
+            try:
+                with gc._rate_limit_lock:
+                    gc._daily_count += 1
+            except Exception as exc:
+                errors.append(exc)
+
+        threads = [threading.Thread(target=increment_quota) for _ in range(thread_count)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=10)
+
+        assert len(errors) == 0, f"Thread errors: {errors}"
+        assert gc._daily_count == thread_count, (
+            f"Expected {thread_count}, got {gc._daily_count} — thread-safety violation"
+        )
+
+        # Verify get_quota_status is also consistent
+        status = gc.get_quota_status()
+        assert status["daily_used"] == thread_count
+
+        # Clean up
+        with gc._rate_limit_lock:
+            gc._daily_count = 0

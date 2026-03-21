@@ -25,6 +25,55 @@ from utils.logger import get_logger
 logger = get_logger(__name__)
 
 
+# ── Sheets API retry decorator ───────────────────────────────────
+
+def retry_sheets_api(max_retries: int = 3, initial_delay: float = 1.0, multiplier: float = 2.0):
+    """
+    Decorator that retries Google Sheets API calls on transient errors.
+
+    Retries on: HTTP 429 (rate limit), 503 (service unavailable),
+    and connection/timeout errors.
+
+    Args:
+        max_retries: Maximum number of retry attempts.
+        initial_delay: Initial delay in seconds before first retry.
+        multiplier: Delay multiplier for exponential backoff.
+    """
+    import functools
+
+    def decorator(func):
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            delay = initial_delay
+            last_exc: Exception | None = None
+            for attempt in range(1, max_retries + 1):
+                try:
+                    return func(*args, **kwargs)
+                except Exception as exc:
+                    last_exc = exc
+                    err_str = str(exc).lower()
+                    retryable = (
+                        "429" in err_str
+                        or "503" in err_str
+                        or "rate" in err_str
+                        or "quota" in err_str
+                        or "connection" in err_str
+                        or "timeout" in err_str
+                    )
+                    if retryable and attempt < max_retries:
+                        logger.debug(
+                            "Sheets API retry %d/%d for %s: %s — waiting %.1fs",
+                            attempt, max_retries, func.__name__, exc, delay,
+                        )
+                        time.sleep(delay)
+                        delay *= multiplier
+                    else:
+                        raise
+            raise last_exc  # type: ignore[misc]
+        return wrapper
+    return decorator
+
+
 # ── Connection cache (created once per process) ─────────────────
 _gspread_client: gspread.Client | None = None
 _spreadsheet: gspread.Spreadsheet | None = None

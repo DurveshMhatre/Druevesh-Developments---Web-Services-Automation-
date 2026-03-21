@@ -31,6 +31,8 @@ def _verify_signature(payload: bytes, signature: str, secret: str) -> bool:
     """
     Verify the X-Hub-Signature-256 header from Meta's webhook.
 
+    Handles both ``sha256=<hex>`` (standard Meta format) and raw hex.
+
     Args:
         payload: Raw request body bytes.
         signature: Value of X-Hub-Signature-256 header.
@@ -40,18 +42,42 @@ def _verify_signature(payload: bytes, signature: str, secret: str) -> bool:
         True if signature is valid.
     """
     if not secret or not signature:
+        logger.debug("Signature verification skipped: secret=%s, sig=%s",
+                     bool(secret), bool(signature))
         return False
+
     expected = hmac.new(
         secret.encode("utf-8"), payload, hashlib.sha256
     ).hexdigest()
-    return hmac.compare_digest(f"sha256={expected}", signature)
+
+    # Handle both "sha256=<hex>" and raw hex formats
+    if signature.startswith("sha256="):
+        sig_hex = signature[7:]  # strip "sha256=" prefix
+    else:
+        sig_hex = signature
+
+    is_valid = hmac.compare_digest(expected, sig_hex)
+    if not is_valid:
+        logger.debug(
+            "Webhook signature mismatch: expected=%s, received=%s",
+            expected[:16] + "...", sig_hex[:16] + "...",
+        )
+    return is_valid
 
 
 # ── Lifespan (startup / shutdown) ────────────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Start scheduler on startup, shut down on exit."""
+    """Validate config, start scheduler on startup, shut down on exit."""
     logger.info("🚀 Starting AI Web Automation server...")
+
+    # Validate environment variables at startup
+    try:
+        from utils.config_validator import validate_env
+        validate_env(strict=False)  # Log warnings, don't crash
+    except Exception as exc:
+        logger.error("Config validation error: %s", exc)
+
     start_scheduler()
     yield
     shutdown_scheduler()
@@ -81,6 +107,26 @@ async def health():
         "status": "ok",
         "whatsapp_mode": WHATSAPP_MODE,
         "gemini_quota": gemini_quota,
+    }
+
+
+@app.get("/health/detailed")
+async def health_detailed():
+    """Detailed health check for debugging (includes local storage, circuit breakers)."""
+    from utils.gemini_client import get_quota_status
+    from utils.local_storage import get_status as local_status
+    from utils.circuit_breaker import gemini_breaker, whatsapp_breaker, sheets_breaker
+
+    return {
+        "status": "ok",
+        "whatsapp_mode": WHATSAPP_MODE,
+        "gemini_quota": get_quota_status(),
+        "local_storage": local_status(),
+        "circuit_breakers": {
+            "gemini": gemini_breaker.get_status(),
+            "whatsapp": whatsapp_breaker.get_status(),
+            "sheets": sheets_breaker.get_status(),
+        },
     }
 
 

@@ -1,13 +1,8 @@
 """Unit tests for the whatsapp-web.js bridge retry logic."""
 
-import sys
-from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
-
-# Add project root to path
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 
 @pytest.mark.asyncio

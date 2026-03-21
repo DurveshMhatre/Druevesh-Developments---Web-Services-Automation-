@@ -122,3 +122,6 @@ WHATSAPP_WEB_JS_URL: str = os.getenv("WHATSAPP_WEB_JS_URL", "http://localhost:30
 # ── FastAPI Server ───────────────────────────────────────────────
 SERVER_HOST: str = os.getenv("SERVER_HOST", "0.0.0.0")
 SERVER_PORT: int = int(os.getenv("SERVER_PORT", "8000"))
+
+# ── Timezone (for quota resets, scheduling) ──────────────────────
+TIMEZONE: str = os.getenv("TIMEZONE", "Asia/Kolkata")
